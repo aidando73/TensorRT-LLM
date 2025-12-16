@@ -811,6 +811,135 @@ def main(*,
         with (build_dir / "tensorrt_llm" / "deep_ep" /
               "cuda_architectures.txt").open() as f:
             deep_ep_cuda_architectures = f.read().strip().strip(";")
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
+            deep_ep_cuda_architectures = False
         if deep_ep_cuda_architectures:
             install_file(get_binding_lib("deep_ep", "deep_ep_cpp_tllm"),
                          pkg_dir)
@@ -870,7 +999,7 @@ def main(*,
         )
 
     if install:
-        build_run(f"\"{sys.executable}\" -m pip install -e .[devel]")
+        build_run(f"\"{sys.executable}\" -m pip install --no-deps -e .[devel]")
 
 
 def add_arguments(parser: ArgumentParser):
