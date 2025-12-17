@@ -980,6 +980,7 @@ public:
         mReceiverSideFifoInfo = mWorkspace.getReceiverSideFifoInfo(mWorldInfo, mPairInfo);
 
         mSingleTransfer128ByteCount = mCommMeta.getTransfer128ByteCount();
+        // printf("mSingleTransfer128ByteCount: %d\n", mSingleTransfer128ByteCount);
         mSingleCompactData128ByteCount = mCommMeta.getCompactData128ByteCount();
         // initialize as need new Entry first
         mFifoEntry128ByteIndexBase = kFifoEntry128ByteCount;
@@ -1069,9 +1070,22 @@ public:
 
         int sendIndex = mPairInfo.channel;
         uint32_t phaseParity = 0;
+        // Track if we have an async S2G copy in flight for the previous token.
+        bool pendingAsyncCopy = false;
+
         for (; sendIndex < tokenCount; sendIndex += mPairInfo.runChannelCount)
         {
             int tokenIndex = sendIndexMapping == nullptr ? sendIndex : sendIndexMapping[sendIndex];
+
+            // Before reusing shared memory for the next token, make sure the previous
+            // cp.async.bulk S2G has completed and its writes are visible at system scope.
+            if (pendingAsyncCopy)
+            {
+                tensorrt_llm::kernels::fused_moe_impl::waitS2GBulkRead();
+                fence_release_sys();
+                pendingAsyncCopy = false;
+            }
+
             tensorrt_llm::kernels::fused_moe_impl::g2sAllFields<HAS_BASIC_FIELD, FIELD_COUNT>(
                 mFieldInfo, mExpertParallelInfo, tokenIndex, mShmemBase, mWarpId, mLaneId, mSmemBar);
             if (needNewEntry())
@@ -1110,13 +1124,25 @@ public:
             FusedMoeProto::protoPack(
                 mShmemBase, mHead, mSingleCompactData128ByteCount, mFifoEntry128ByteIndexBase, mWarpId, mLaneId);
 
-            tensorrt_llm::kernels::fused_moe_impl::startWorkspaceS2GReg(getFifoEntryPtr(), mShmemBase,
+            // Launch async bulk shared->global copy for this token's workspace.
+            tensorrt_llm::kernels::fused_moe_impl::startWorkspaceS2G(getFifoEntryPtr(), mShmemBase,
                 mSingleTransfer128ByteCount, mFifoEntry128ByteIndexBase, mWarpId, mLaneId);
 
-            // tensorrt_llm::kernels::fused_moe_impl::waitS2GBulkRead();
+            // Defer the wait to the next iteration so that the copy can overlap with
+            // work for the next token.
+            pendingAsyncCopy = true;
 
             nextToken();
         }
+
+        // Flush any in-flight async copy before exiting and publishing the final head.
+        if (pendingAsyncCopy)
+        {
+            tensorrt_llm::kernels::fused_moe_impl::waitS2GBulkRead();
+            fence_release_sys();
+            pendingAsyncCopy = false;
+        }
+
         if (mFifoEntry128ByteIndexBase > 0)
         {
             mHead++;
@@ -1395,7 +1421,6 @@ void FusedMoeWorkspace::initializeLocalWorkspace(FusedMoeWorldInfo const& worldI
 
 void moeAllToAll(FusedMoeCommKernelParam params, FusedMoeWorkspace workspace, cudaStream_t stream)
 {
-    printf("moeAllToAll - executed 3rd time\n");
     bool hasBasicFields = params.sendFieldInfo.tokenSelectedSlots != nullptr;
     int warpSendShmSize = params.sendCommMeta.getSingleShmSize();
     int warpRecvShmSize = params.recvCommMeta.getSingleShmSize();
