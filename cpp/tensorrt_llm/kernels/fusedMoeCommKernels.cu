@@ -1431,7 +1431,7 @@ void moeAllToAll(FusedMoeCommKernelParam params, FusedMoeWorkspace workspace, cu
     int groupCountPerCta = std::min(maxGroupCountPerCta, maxDynamicShmSize / warpShmSize); // 8
 
     int maxFieldCount = std::max(params.sendFieldInfo.fieldCount, params.recvFieldInfo.fieldCount);
-    printf("maxFieldCount: %d\n", maxFieldCount); // 1 or 2
+    // printf("maxFieldCount: %d\n", maxFieldCount); // 1 or 2
     TLLM_CHECK_WITH_INFO(params.isLowPrecision == false || maxFieldCount == 1, "low precision only support 1 field");
 
     auto getFunc = [](int fieldCount, bool lowPrecision)
@@ -1480,12 +1480,10 @@ void moeAllToAll(FusedMoeCommKernelParam params, FusedMoeWorkspace workspace, cu
         groupCountPerCta >= 1, "computed groupCount=%d, warpShmSize=%d", groupCountPerCta, warpShmSize);
     int ctaPerChannel = (epSize + groupCountPerCta - 1) / groupCountPerCta; // 2
     groupCountPerCta = (epSize + ctaPerChannel - 1) / ctaPerChannel; // 8
-    // printf("groupCountPerCta: %d, ctaPerChannel: %d, epSize: %d\n", groupCountPerCta, ctaPerChannel, epSize);
-    // printf("warpShmSize: %d\n", warpShmSize);
     int totalDynamicShmSize = warpShmSize * groupCountPerCta; // 15336 * 8 = 122,688
 
-    dim3 block = FusedMoeCommunicator::getLaunchBlockDim(groupCountPerCta);
-    dim3 grid = FusedMoeCommunicator::getLaunchGridDim(params.worldInfo.epInfo.epSize, groupCountPerCta);
+    dim3 block = FusedMoeCommunicator::getLaunchBlockDim(groupCountPerCta); // x=32 (warp size), y=8 (group count per block)
+    dim3 grid = FusedMoeCommunicator::getLaunchGridDim(params.worldInfo.epInfo.epSize, groupCountPerCta); // x=2 (cta per channel), y=19 (channel count), z=2 (send and recv)
     printf("block: %d, %d, grid: %d, %d, %d\n", block.x, block.y, grid.x, grid.y, grid.z);
     kernelFn<<<grid, block, totalDynamicShmSize, stream>>>(params, workspace, hasBasicFields);
     TLLM_CUDA_CHECK(cudaGetLastError());

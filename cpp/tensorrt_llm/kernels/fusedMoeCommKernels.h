@@ -318,10 +318,10 @@ public:
     {
         int maxChannelCount = FusedMoeCommunicator::getMoeCommChannelCount(epSize);
         int targetCtaCount = (epSize + MAX_GROUP_COUNT_PER_BLOCK - 1) / MAX_GROUP_COUNT_PER_BLOCK * maxChannelCount * 2;
-        int ctaPerChannel = (epSize + groupCountPerCta - 1) / groupCountPerCta;
+        int ctaPerChannel = (epSize + groupCountPerCta - 1) / groupCountPerCta; // 2
         int ctaLimitedChannelCount = targetCtaCount / 2 / ctaPerChannel;
         ctaLimitedChannelCount = std::max(1, ctaLimitedChannelCount);
-        int channelCount = std::min(ctaLimitedChannelCount, maxChannelCount);
+        int channelCount = std::min(ctaLimitedChannelCount, maxChannelCount); // 19
         return dim3(ctaPerChannel, channelCount, 2);
     }
 };
