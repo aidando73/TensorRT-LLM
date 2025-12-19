@@ -292,8 +292,8 @@ public:
         TLLM_CHECK_WITH_INFO(
             blockCountPerChannel <= smCount, "GPU should support at lease one channel, usableSmCount=%d", smCount);
         int perferredChannel = smCount / 2 / blockCountPerChannel; // 19 - use half SMs for communication
-        printf("smCount: %d, blockCountPerChannel: %d\n", smCount, blockCountPerChannel);
-        printf("perferredChannel: %d\n", perferredChannel);
+        // printf("smCount: %d, blockCountPerChannel: %d\n", smCount, blockCountPerChannel);
+        // printf("perferredChannel: %d\n", perferredChannel);
         int channelCount = std::max(perferredChannel, 1); // 19
         return channelCount;
     }

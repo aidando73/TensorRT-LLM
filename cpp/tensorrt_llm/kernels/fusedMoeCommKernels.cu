@@ -1262,15 +1262,15 @@ template <int FIELD_COUNT = MOE_COMM_FIELD_MAX_COUNT, bool LOW_PRECISION = false
 __global__ void moeAllToAllKernel(FusedMoeCommKernelParam params, FusedMoeWorkspace workspace, bool hasBasicFields)
 {
     __shared__ uint64_t allWarpSmemBar[32];
-    extern __shared__ int4 allWarpShm[];
+    extern __shared__ int4 allWarpShm[]; // 122,688 bytes / 16 bytes per int4 = 7,668
 
     bool isSender = blockIdx.z == 0;
-    int runChannelCount = gridDim.y;
-    int group = threadIdx.y;
+    int runChannelCount = gridDim.y; // 19
+    int group = threadIdx.y; // 0-7
     SendRecvIndices dataIndices = isSender ? params.sendIndices : params.recvIndices;
 
     FusedMoePairInfo pairInfo;
-    int peerRank = blockIdx.x * blockDim.y + group;
+    int peerRank = blockIdx.x * blockDim.y + group; // 0-1 * 8 + (0-7) = 0-15
     if (peerRank >= params.worldInfo.epInfo.epSize)
     {
         return;
@@ -1282,8 +1282,8 @@ __global__ void moeAllToAllKernel(FusedMoeCommKernelParam params, FusedMoeWorksp
         return;
     }
 
-    pairInfo.channel = blockIdx.y;
-    pairInfo.runChannelCount = runChannelCount;
+    pairInfo.channel = blockIdx.y; // 0-18
+    pairInfo.runChannelCount = runChannelCount; // 19
     pairInfo.senderRank = isSender ? params.worldInfo.epInfo.epRank : peerRank;
     pairInfo.receiverRank = isSender ? peerRank : params.worldInfo.epInfo.epRank;
 
@@ -1484,7 +1484,7 @@ void moeAllToAll(FusedMoeCommKernelParam params, FusedMoeWorkspace workspace, cu
 
     dim3 block = FusedMoeCommunicator::getLaunchBlockDim(groupCountPerCta); // x=32 (warp size), y=8 (group count per block)
     dim3 grid = FusedMoeCommunicator::getLaunchGridDim(params.worldInfo.epInfo.epSize, groupCountPerCta); // x=2 (cta per channel), y=19 (channel count), z=2 (send and recv)
-    printf("block: %d, %d, grid: %d, %d, %d\n", block.x, block.y, grid.x, grid.y, grid.z);
+    // printf("block: %d, %d, grid: %d, %d, %d\n", block.x, block.y, grid.x, grid.y, grid.z);
     kernelFn<<<grid, block, totalDynamicShmSize, stream>>>(params, workspace, hasBasicFields);
     TLLM_CUDA_CHECK(cudaGetLastError());
 }
