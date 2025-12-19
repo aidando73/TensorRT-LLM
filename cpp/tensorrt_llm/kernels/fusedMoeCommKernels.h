@@ -286,13 +286,15 @@ public:
 
     static int computeMoeCommChannelCount(int epSize)
     {
-        int smCount = getMaxUsableSmCount();
-        int blockCountPerChannel = (epSize + MAX_GROUP_COUNT_PER_BLOCK - 1) / MAX_GROUP_COUNT_PER_BLOCK;
-        blockCountPerChannel *= 2; // for send and recv
+        int smCount = getMaxUsableSmCount(); // 152
+        int blockCountPerChannel = (epSize + MAX_GROUP_COUNT_PER_BLOCK - 1) / MAX_GROUP_COUNT_PER_BLOCK; // 2
+        blockCountPerChannel *= 2; // 4 - for send and recv
         TLLM_CHECK_WITH_INFO(
             blockCountPerChannel <= smCount, "GPU should support at lease one channel, usableSmCount=%d", smCount);
-        int perferredChannel = smCount / 2 / blockCountPerChannel; // use half SMs for communication
-        int channelCount = std::max(perferredChannel, 1);          // at lease one channel
+        int perferredChannel = smCount / 2 / blockCountPerChannel; // 19 - use half SMs for communication
+        printf("smCount: %d, blockCountPerChannel: %d\n", smCount, blockCountPerChannel);
+        printf("perferredChannel: %d\n", perferredChannel);
+        int channelCount = std::max(perferredChannel, 1); // 19
         return channelCount;
     }
 
@@ -302,7 +304,7 @@ public:
         auto iter = channelCountMap.find(epSize);
         if (iter == channelCountMap.end())
         {
-            auto channelCount = FusedMoeCommunicator::computeMoeCommChannelCount(epSize);
+            auto channelCount = FusedMoeCommunicator::computeMoeCommChannelCount(epSize); // 19
             channelCountMap[epSize] = channelCount;
             return channelCount;
         }
@@ -316,11 +318,12 @@ public:
 
     static dim3 getLaunchGridDim(int epSize, int groupCountPerCta)
     {
-        int maxChannelCount = FusedMoeCommunicator::getMoeCommChannelCount(epSize);
-        int targetCtaCount = (epSize + MAX_GROUP_COUNT_PER_BLOCK - 1) / MAX_GROUP_COUNT_PER_BLOCK * maxChannelCount * 2;
+        int maxChannelCount = FusedMoeCommunicator::getMoeCommChannelCount(epSize); // 19
+        int targetCtaCount = (epSize + MAX_GROUP_COUNT_PER_BLOCK - 1) / MAX_GROUP_COUNT_PER_BLOCK * maxChannelCount * 2; // 76
+        // printf("targetCtaCount: %d\n", targetCtaCount);
         int ctaPerChannel = (epSize + groupCountPerCta - 1) / groupCountPerCta; // 2
-        int ctaLimitedChannelCount = targetCtaCount / 2 / ctaPerChannel;
-        ctaLimitedChannelCount = std::max(1, ctaLimitedChannelCount);
+        int ctaLimitedChannelCount = targetCtaCount / 2 / ctaPerChannel; // 19
+        ctaLimitedChannelCount = std::max(1, ctaLimitedChannelCount); // 19
         int channelCount = std::min(ctaLimitedChannelCount, maxChannelCount); // 19
         return dim3(ctaPerChannel, channelCount, 2);
     }
