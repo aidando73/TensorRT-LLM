@@ -33,6 +33,12 @@ Staging plan:
   - print and exit
   - Check on receiver end for the 2nd buffer.
 
+Napkin math:
+- 256 tokens global
+- 16 tokens per rank
+- hidden_dim = 7168 - 2 bytes each (bfloat16)
+- 114,688 bytes per rank
+- If each block does transfers of 122,688 bytes per rank - then this will complete within 1-2 transfers.
 */
 
 #include "tensorrt_llm/kernels/fusedMoeCommKernels.h"
@@ -1261,6 +1267,8 @@ private:
 template <int FIELD_COUNT = MOE_COMM_FIELD_MAX_COUNT, bool LOW_PRECISION = false>
 __global__ void moeAllToAllKernel(FusedMoeCommKernelParam params, FusedMoeWorkspace workspace, bool hasBasicFields)
 {
+    // 8 warps per block, 32 threads per warp
+    // 15,336 bytes shared memory allocated for each warp
     __shared__ uint64_t allWarpSmemBar[32];
     extern __shared__ int4 allWarpShm[]; // 122,688 bytes / 16 bytes per int4 = 7,668
 
