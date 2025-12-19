@@ -40,10 +40,13 @@ Napkin math:
 - 230,336 bytes per rank
 - If each block does transfers of 122,688 bytes per rank - then this will complete within 1-2 transfers.
 - In that case doing a double buffer seems like we won't get that much overlap.
+- But suppose we reduce the transfer size? Then we can overlap more - but if we're bandwidth bound - then that might cause more slowness?
+  - Very unlikely that we're bandwidth bound - very likely we're bound by latency.
+  - So if we reduce the transfer size - and overlap all these overheads - maybe we'll get a latency speedup?
 
-Ideas:
+More ideas:
 - Split warps 0-3 and 4-7 into two groups - one for loading (g2s) and one for sending (s2g)
-
+- 
 */
 
 #include "tensorrt_llm/kernels/fusedMoeCommKernels.h"
