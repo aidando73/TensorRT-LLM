@@ -39,6 +39,7 @@ Napkin math:
 - hidden_dim = 7168 - 2 bytes each (bfloat16)
 - 114,688 bytes per rank
 - If each block does transfers of 122,688 bytes per rank - then this will complete within 1-2 transfers.
+- In that case doing a double buffer seems like we won't get that much overlap.
 */
 
 #include "tensorrt_llm/kernels/fusedMoeCommKernels.h"
