@@ -14,6 +14,27 @@
  * limitations under the License.
  */
 
+/*
+Ping-pong buffer solution:
+- Increase shared memory buffer by 2
+- Use the same buffer format
+- Async send
+- Then pack the next buffer -> async send
+- Wait for previous buffer
+- Repeat.
+
+Staging plan:
+- Do sender first - receiver after
+- Naive - stage 1: Increase shared memory buffer by 2
+  - Send the first buffer - then do async copy for the 2nd buffer
+  - Wait 2 seconds -> print the 2nd buffer and exit
+- Naive - stage 2: Remove the 2 second wait with a wait
+- Naive - stage 3: Send the first buffer, then send the 2nd buffer, then pack the 1st buffer
+  - print and exit
+  - Check on receiver end for the 2nd buffer.
+
+*/
+
 #include "tensorrt_llm/kernels/fusedMoeCommKernels.h"
 
 #include <type_traits>
@@ -656,6 +677,7 @@ public:
     {
         // each 15 * 128 byte need one tail 128 byte
         int tail128ByteSize = (compact128ByteSizeBeforeProto + 15 * 128 - 1) / (15 * 128) * 128;
+        // printf("compact128ByteSizeBeforeProto: %d, tail128ByteSize: %d\n", compact128ByteSizeBeforeProto, tail128ByteSize);
         return compact128ByteSizeBeforeProto + tail128ByteSize;
     }
 };
@@ -1312,6 +1334,7 @@ int computeMoeAlltoallMaxDynamicSharedMemorySize()
     int staticSmem = static_cast<int>(attr.sharedSizeBytes);
     int maxPerBlockShmOptin = 0;
     TLLM_CUDA_CHECK(cudaDeviceGetAttribute(&maxPerBlockShmOptin, cudaDevAttrMaxSharedMemoryPerBlockOptin, devId));
+    // printf("staticSmem: %d, maxPerBlockShmOptin: %d\n", staticSmem, maxPerBlockShmOptin);
     return maxPerBlockShmOptin - staticSmem;
 }
 
@@ -1397,17 +1420,18 @@ void moeAllToAll(FusedMoeCommKernelParam params, FusedMoeWorkspace workspace, cu
 {
     // printf("moeAllToAll - executed 3rd time\n");
     bool hasBasicFields = params.sendFieldInfo.tokenSelectedSlots != nullptr;
-    int warpSendShmSize = params.sendCommMeta.getSingleShmSize();
-    int warpRecvShmSize = params.recvCommMeta.getSingleShmSize();
+    int warpSendShmSize = params.sendCommMeta.getSingleShmSize(); // 15360
+    int warpRecvShmSize = params.recvCommMeta.getSingleShmSize(); // 15360
     int warpShmSize = warpSendShmSize;
-    int epSize = params.worldInfo.epInfo.epSize;
+    int epSize = params.worldInfo.epInfo.epSize; // 16
     TLLM_CHECK_WITH_INFO(warpSendShmSize == warpRecvShmSize, "warpSendShmSize(%d) not same as warpRecvShmSize(%d)",
         warpSendShmSize, warpRecvShmSize);
-    int maxGroupCountPerCta = std::min(params.worldInfo.epInfo.epSize, FusedMoeCommunicator::MAX_GROUP_COUNT_PER_BLOCK);
-    static int maxDynamicShmSize = fused_moe_impl::computeMoeAlltoallMaxDynamicSharedMemorySize();
-    int groupCountPerCta = std::min(maxGroupCountPerCta, maxDynamicShmSize / warpShmSize);
+    int maxGroupCountPerCta = std::min(params.worldInfo.epInfo.epSize, FusedMoeCommunicator::MAX_GROUP_COUNT_PER_BLOCK); // 8
+    static int maxDynamicShmSize = fused_moe_impl::computeMoeAlltoallMaxDynamicSharedMemorySize(); // 232192
+    int groupCountPerCta = std::min(maxGroupCountPerCta, maxDynamicShmSize / warpShmSize); // 8
 
     int maxFieldCount = std::max(params.sendFieldInfo.fieldCount, params.recvFieldInfo.fieldCount);
+    printf("maxFieldCount: %d\n", maxFieldCount); // 1 or 2
     TLLM_CHECK_WITH_INFO(params.isLowPrecision == false || maxFieldCount == 1, "low precision only support 1 field");
 
     auto getFunc = [](int fieldCount, bool lowPrecision)
@@ -1454,12 +1478,15 @@ void moeAllToAll(FusedMoeCommKernelParam params, FusedMoeWorkspace workspace, cu
     }
     TLLM_CHECK_WITH_INFO(
         groupCountPerCta >= 1, "computed groupCount=%d, warpShmSize=%d", groupCountPerCta, warpShmSize);
-    int ctaPerChannel = (epSize + groupCountPerCta - 1) / groupCountPerCta;
-    groupCountPerCta = (epSize + ctaPerChannel - 1) / ctaPerChannel;
-    int totalDynamicShmSize = warpShmSize * groupCountPerCta;
+    int ctaPerChannel = (epSize + groupCountPerCta - 1) / groupCountPerCta; // 2
+    groupCountPerCta = (epSize + ctaPerChannel - 1) / ctaPerChannel; // 8
+    // printf("groupCountPerCta: %d, ctaPerChannel: %d, epSize: %d\n", groupCountPerCta, ctaPerChannel, epSize);
+    // printf("warpShmSize: %d\n", warpShmSize);
+    int totalDynamicShmSize = warpShmSize * groupCountPerCta; // 15336 * 8 = 122,688
 
     dim3 block = FusedMoeCommunicator::getLaunchBlockDim(groupCountPerCta);
     dim3 grid = FusedMoeCommunicator::getLaunchGridDim(params.worldInfo.epInfo.epSize, groupCountPerCta);
+    printf("block: %d, %d, grid: %d, %d, %d\n", block.x, block.y, grid.x, grid.y, grid.z);
     kernelFn<<<grid, block, totalDynamicShmSize, stream>>>(params, workspace, hasBasicFields);
     TLLM_CUDA_CHECK(cudaGetLastError());
 }

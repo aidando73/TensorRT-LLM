@@ -226,6 +226,7 @@ struct MoeSingleCommMeta
 
     __device__ __host__ __forceinline__ int getSingleShmSize() const
     {
+        // printf("singleUncompactAlignedSize: %d, singleTransferAlignedSize: %d\n", singleUncompactAlignedSize, singleTransferAlignedSize);
         return std::max(singleUncompactAlignedSize, singleTransferAlignedSize);
     }
 };
@@ -359,6 +360,7 @@ struct FusedMoeFieldInfo
 
     __host__ int computeSingleUncompactSize(int topK, bool hasScales, bool hasBasicFields) const
     {
+        // printf("topK %d\n", topK);
         int basicFieldSize = 0;
         if (hasBasicFields)
         {
@@ -367,15 +369,18 @@ struct FusedMoeFieldInfo
             basicFieldSize = (basicFieldSize + MoeCommFieldInfo::BYTES_PER_16B_BLOCK - 1)
                 / MoeCommFieldInfo::BYTES_PER_16B_BLOCK * MoeCommFieldInfo::BYTES_PER_16B_BLOCK;
         }
+        // printf("basicFieldSize: %d\n", basicFieldSize);
         int otherFieldSize = 0;
         for (int i = 0; i < fieldCount; i++)
         {
             MoeCommFieldInfo const& fieldInfo = fieldsInfo[i];
             otherFieldSize += fieldInfo.getFieldUncompactSize();
         }
+        // printf("otherFieldSize: %d\n", otherFieldSize);
         int totalSize = basicFieldSize + otherFieldSize;
         constexpr int totalSizeAlignment = MoeCommFieldInfo::BYTES_PER_128B_BLOCK;
         totalSize = (totalSize + totalSizeAlignment - 1) / totalSizeAlignment * totalSizeAlignment;
+        // printf("totalSize: %d\n", totalSize);
         return totalSize;
     }
 
