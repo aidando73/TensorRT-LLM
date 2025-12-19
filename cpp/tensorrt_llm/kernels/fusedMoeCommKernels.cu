@@ -37,9 +37,13 @@ Napkin math:
 - 256 tokens global
 - 16 tokens per rank
 - hidden_dim = 7168 - 2 bytes each (bfloat16)
-- 114,688 bytes per rank
+- 230,336 bytes per rank
 - If each block does transfers of 122,688 bytes per rank - then this will complete within 1-2 transfers.
 - In that case doing a double buffer seems like we won't get that much overlap.
+
+Ideas:
+- Split warps 0-3 and 4-7 into two groups - one for loading (g2s) and one for sending (s2g)
+
 */
 
 #include "tensorrt_llm/kernels/fusedMoeCommKernels.h"
@@ -1427,7 +1431,6 @@ void FusedMoeWorkspace::initializeLocalWorkspace(FusedMoeWorldInfo const& worldI
 
 void moeAllToAll(FusedMoeCommKernelParam params, FusedMoeWorkspace workspace, cudaStream_t stream)
 {
-    // printf("moeAllToAll - executed 3rd time\n");
     bool hasBasicFields = params.sendFieldInfo.tokenSelectedSlots != nullptr;
     int warpSendShmSize = params.sendCommMeta.getSingleShmSize(); // 15360
     int warpRecvShmSize = params.recvCommMeta.getSingleShmSize(); // 15360
@@ -1439,8 +1442,7 @@ void moeAllToAll(FusedMoeCommKernelParam params, FusedMoeWorkspace workspace, cu
     static int maxDynamicShmSize = fused_moe_impl::computeMoeAlltoallMaxDynamicSharedMemorySize(); // 232192
     int groupCountPerCta = std::min(maxGroupCountPerCta, maxDynamicShmSize / warpShmSize); // 8
 
-    int maxFieldCount = std::max(params.sendFieldInfo.fieldCount, params.recvFieldInfo.fieldCount);
-    // printf("maxFieldCount: %d\n", maxFieldCount); // 1 or 2
+    int maxFieldCount = std::max(params.sendFieldInfo.fieldCount, params.recvFieldInfo.fieldCount); // 1 or 2
     TLLM_CHECK_WITH_INFO(params.isLowPrecision == false || maxFieldCount == 1, "low precision only support 1 field");
 
     auto getFunc = [](int fieldCount, bool lowPrecision)
