@@ -15,8 +15,8 @@
  */
 
 /*
-Note:
-- We don't really use the quantization in this kernel - so don't worry about try to hide latency there.
+Notes:
+- We don't use the quantization in this kernel - so don't worry about hiding latency there.
 - Current: compute throughput: 0.5%, memory throughput: 0.5%, transmitted peak bandwidth: 1.93% -> so we're mainly latency bound.
 
 More ideas:
