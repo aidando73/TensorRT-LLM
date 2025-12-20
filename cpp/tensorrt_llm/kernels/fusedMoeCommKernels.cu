@@ -18,9 +18,19 @@
 Notes:
 - We don't use the quantization in this kernel - so don't worry about hiding latency there.
 - Current: compute throughput: 0.5%, memory throughput: 0.5%, transmitted peak bandwidth: 1.93% -> so we're mainly latency bound.
+- We pay about a 10us overhead on synchronization / waiting for transfers
+    Baseline (us)
+    |   batch_size |   trt_mnnvl |
+    |--------------|-------------|
+    |           32 |          40 |
+    |          512 |          52 |
+    DISABLE_MOE_A2A_SYNC_FOR_PROFILING=1 (us)
+    |   batch_size |   trt_mnnvl |
+    |--------------|-------------|
+    |           32 |          31 |
+    |          512 |          41 |
 
 More ideas:
-- Increase occupancy - 76 -> 156
 - protoPack with int4 instead of int64_t
 - optimize protoPack latency
 - TMA Copy instructions
@@ -36,6 +46,11 @@ Bigger architectural changes:
 Probably not worth:
 - Ping-pong buffer.
 - Split warps 0-3 and 4-7 into two groups - one for loading (g2s) and one for sending (s2g)
+
+Attempted:
+- Increase occupancy - 76 -> 156
+  - But this doesn't help much - still latency bound.
+- groupCountPerCta = 4, 2, 1 - no meaningful change in latency
 
 View design.md for more details.
 */
