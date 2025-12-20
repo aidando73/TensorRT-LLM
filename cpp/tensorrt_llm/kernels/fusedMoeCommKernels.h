@@ -104,14 +104,17 @@ struct MoeCommFieldInfo
 
     __device__ __host__ __forceinline__ int getFieldUncompactSize() const
     {
-        int alignedUnitBytes = 1 << alignedUnitBit;
-        int currentFieldSize = alignedUnitCount * alignedUnitBytes;
+        int alignedUnitBytes = 1 << alignedUnitBit; // 16
+        int currentFieldSize = alignedUnitCount * alignedUnitBytes; // 896 * 16 = 14336
         if (alignedUnitBytes != 16)
         {
             constexpr int alignedUnitBytes = BYTES_PER_16B_BLOCK;
             currentFieldSize = currentFieldSize / alignedUnitBytes * alignedUnitBytes;
             currentFieldSize += alignedUnitBytes * 2;
         }
+        // currentFieldSize = 32 = alignedUnitCount=2 * alignedUnitBytes=16 (topk=8, int32 (4 bytes) * 8 = 32 bytes)
+        // currentFieldSize = 14336 = alignedUnitCount=896 * alignedUnitBytes=16 (hidden_dim=7168 * bfloat16=2 bytes = 14336 bytes)
+        // printf("currentFieldSize: %d - alignedUnitCount: %d - alignedUnitBytes: %d\n", currentFieldSize, alignedUnitCount, alignedUnitBytes);
         return currentFieldSize;
     }
 
@@ -374,10 +377,12 @@ struct FusedMoeFieldInfo
         }
         // printf("basicFieldSize: %d\n", basicFieldSize);
         int otherFieldSize = 0;
+        // printf("fieldCount: %d\n", fieldCount);
         for (int i = 0; i < fieldCount; i++)
         {
             MoeCommFieldInfo const& fieldInfo = fieldsInfo[i];
             otherFieldSize += fieldInfo.getFieldUncompactSize();
+            // printf("otherFieldSize: %d\n", otherFieldSize);
         }
         // printf("otherFieldSize: %d\n", otherFieldSize);
         int totalSize = basicFieldSize + otherFieldSize;

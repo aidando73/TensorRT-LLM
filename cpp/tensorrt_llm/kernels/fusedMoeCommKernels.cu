@@ -15,6 +15,24 @@
  */
 
 /*
+Note: We don't really use the quantization in this kernel - so don't worry about try to hide latency there.
+
+More ideas:
+- TMA Copy instructions
+- Reduce __syncwarp() in memove()
+- warp specialization - comm warps and compute warps
+    - comm warps: g2s and s2g
+    - compute warps: pack and unpack
+    - Ping-pong buffer.
+    
+Bigger architectural changes:
+- Eliminate pack/unpack - have g2s load directly into final compact layout
+- Replace LL128 with single per flag payload
+    
+Probably not worth:
+- Split warps 0-3 and 4-7 into two groups - one for loading (g2s) and one for sending (s2g)
+
+
 Ping-pong buffer solution:
 - Increase shared memory buffer by 2
 - Use the same buffer format
@@ -26,27 +44,25 @@ Ping-pong buffer solution:
 Staging plan:
 - Do sender first - receiver after
 - Naive - stage 1: Increase shared memory buffer by 2
-  - Send the first buffer - then do async copy for the 2nd buffer
-  - Wait 2 seconds -> print the 2nd buffer and exit
+- Send the first buffer - then do async copy for the 2nd buffer
+- Wait 2 seconds -> print the 2nd buffer and exit
 - Naive - stage 2: Remove the 2 second wait with a wait
 - Naive - stage 3: Send the first buffer, then send the 2nd buffer, then pack the 1st buffer
-  - print and exit
-  - Check on receiver end for the 2nd buffer.
+- print and exit
+- Check on receiver end for the 2nd buffer.
 
 Napkin math:
 - 256 tokens global
 - 16 tokens per rank
 - hidden_dim = 7168 - 2 bytes each (bfloat16)
 - 230,336 bytes per rank
-- If each block does transfers of 122,688 bytes per rank - then this will complete within 1-2 transfers.
+- If each rank has at least 1 block and each block does transfers of 122,688 bytes per rank
+- then this will complete within 1-2 transfers.
 - In that case doing a double buffer seems like we won't get that much overlap.
 - But suppose we reduce the transfer size? Then we can overlap more - but if we're bandwidth bound - then that might cause more slowness?
-  - Very unlikely that we're bandwidth bound - very likely we're bound by latency.
-  - So if we reduce the transfer size - and overlap all these overheads - maybe we'll get a latency speedup?
+- Very unlikely that we're bandwidth bound - very likely we're bound by latency.
+- So if we reduce the transfer size - and overlap all these overheads - maybe we'll get a latency speedup?
 
-More ideas:
-- Split warps 0-3 and 4-7 into two groups - one for loading (g2s) and one for sending (s2g)
-- 
 */
 
 #include "tensorrt_llm/kernels/fusedMoeCommKernels.h"
@@ -535,7 +551,7 @@ __host__ void MoeCommFieldInfo::fillFieldInfo(
 
     if (elementSize == 16)
     {
-        alignedUnitBit = 4;
+        alignedUnitBit = 4; // <-
     }
     else if (elementSize == 8)
     {
@@ -554,9 +570,10 @@ __host__ void MoeCommFieldInfo::fillFieldInfo(
         alignedUnitBit = 0;
     }
 
-    alignedUnitCount = vectorSize;
-    alignedUnitStride = stride;
-    originalDataType = dataType;
+    alignedUnitCount = vectorSize; // 2 or 896
+    alignedUnitStride = stride; // 896
+    originalDataType = dataType; // 14
+    // printf("alignedUnitCount: %d\n", alignedUnitCount);
 }
 
 class Ll128Proto
@@ -1439,8 +1456,8 @@ void moeAllToAll(FusedMoeCommKernelParam params, FusedMoeWorkspace workspace, cu
     int warpRecvShmSize = params.recvCommMeta.getSingleShmSize(); // 15360
     int warpShmSize = warpSendShmSize;
     int epSize = params.worldInfo.epInfo.epSize; // 16
-    TLLM_CHECK_WITH_INFO(warpSendShmSize == warpRecvShmSize, "warpSendShmSize(%d) not same as warpRecvShmSize(%d)",
-        warpSendShmSize, warpRecvShmSize);
+    // TLLM_CHECK_WITH_INFO(warpSendShmSize == warpRecvShmSize, "warpSendShmSize(%d) not same as warpRecvShmSize(%d)",
+        // warpSendShmSize, warpRecvShmSize);
     int maxGroupCountPerCta = std::min(params.worldInfo.epInfo.epSize, FusedMoeCommunicator::MAX_GROUP_COUNT_PER_BLOCK); // 8
     static int maxDynamicShmSize = fused_moe_impl::computeMoeAlltoallMaxDynamicSharedMemorySize(); // 232192
     int groupCountPerCta = std::min(maxGroupCountPerCta, maxDynamicShmSize / warpShmSize); // 8

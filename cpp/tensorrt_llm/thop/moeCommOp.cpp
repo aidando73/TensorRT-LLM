@@ -32,8 +32,17 @@ void setMoeCommFieldInfo(tensorrt_llm::kernels::MoeCommFieldInfo& fieldInfo, tor
 {
     TORCH_CHECK(tensor.dim() == 2, "tensor must be a 2D tensor");
     int eltSize = tensor.dtype().itemsize();
-    fieldInfo.fillFieldInfo(static_cast<uint8_t*>(tensor.data_ptr()), eltSize, tensor.size(1), tensor.stride(0),
-        convert_torch_dtype(tensor.scalar_type()));
+    // printf("eltSize: %d\n", eltSize);
+    // printf("tensor.size(1): %d\n", tensor.size(1));
+    // printf("tensor.stride(0): %d\n", tensor.stride(0));
+    // printf("convert_torch_dtype(tensor.scalar_type()): %d\n", convert_torch_dtype(tensor.scalar_type()));
+    fieldInfo.fillFieldInfo(
+        static_cast<uint8_t*>(tensor.data_ptr()),
+        eltSize, // elementSize=2
+        tensor.size(1), // vectorSize=7168
+        tensor.stride(0), // stride=7168
+        convert_torch_dtype(tensor.scalar_type()) // dataType=
+    );
 }
 
 c10::List<torch::Tensor> moeCommOp(c10::List<torch::Tensor> inputs, torch::Tensor sendRankCumSum,
@@ -116,6 +125,12 @@ c10::List<torch::Tensor> moeCommOp(c10::List<torch::Tensor> inputs, torch::Tenso
         &(params.sendCommMeta), params.expertParallelInfo.topK, false, false, useLowPrecisionVal);
     params.recvFieldInfo.fillMetaInfo(
         &(params.recvCommMeta), params.expertParallelInfo.topK, false, false, useLowPrecisionVal);
+
+    // printf("params.sendCommMeta.singleUncompactAlignedSize: %d\n", params.sendCommMeta.singleUncompactAlignedSize); // 14,464
+    // printf("params.recvCommMeta.singleUncompactAlignedSize: %d\n", params.recvCommMeta.singleUncompactAlignedSize); // 14,464
+    // printf("params.expertParallelInfo.topK: %d\n", params.expertParallelInfo.topK); // 1
+    // printf("params.sendFieldInfo.fieldCount: %d\n", params.sendFieldInfo.fieldCount); // 2
+    // printf("params.isLowPrecision: %d\n", params.isLowPrecision); // 0
 
     tensorrt_llm::kernels::FusedMoeWorkspace fusedMoeWorkspace;
     tensorrt_llm::kernels::constructWorkspace(
