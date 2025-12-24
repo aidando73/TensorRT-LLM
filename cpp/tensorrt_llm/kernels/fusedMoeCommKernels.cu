@@ -15,7 +15,7 @@
  */
 
 /*
-Notes:
+Notes (not from original author - but from someone trying to understand the code / optimize it after the fact):
 - We don't use the quantization in this kernel - so don't worry about hiding latency there.
 - Current: compute throughput: 0.5%, memory throughput: 0.5%, transmitted peak bandwidth: 1.93% -> so we're mainly latency bound.
 - We pay about a 10us overhead on synchronization / waiting for transfers
@@ -29,6 +29,10 @@ Notes:
     |--------------|-------------|
     |           32 |          31 |
     |          512 |          41 |
+- We spend majority of the time in g2sLoop(startG2S+wait+check) in receiver (about 90% of the time). Then sub breakdowns.
+    - g2sLoop_startWorkspaceG2S total=936 calls=3 avg=312.0 pct=6.1%
+    - g2sLoop_smemBarWait      total=2631 calls=3 avg=877.0 pct=17.1%
+    - g2sLoop_checkDataReceived total=1366 calls=3 avg=455.3 pct=8.9%
 
 More ideas:
 - protoPack with int4 instead of int64_t
@@ -44,15 +48,14 @@ Bigger architectural changes:
 - Replace LL128 with single per flag payload
 
 Probably not worth:
-- Ping-pong buffer.
+- Ping-pong buffer - see design.md for more details
 - Split warps 0-3 and 4-7 into two groups - one for loading (g2s) and one for sending (s2g)
 
 Attempted:
-- Increase occupancy - 76 -> 156
-  - But this doesn't help much - still latency bound.
+- Increase occupancy - 76 -> 156 - But this doesn't help much - still latency bound.
 - groupCountPerCta = 4, 2, 1 - no meaningful change in latency
 
-View design.md for more details.
+---------- End of Notes ----------
 */
 
 #include "tensorrt_llm/kernels/fusedMoeCommKernels.h"
@@ -70,13 +73,75 @@ View design.md for more details.
 // Compute range replay) where those loops can cause hangs. Do NOT enable this
 // in normal runs; correctness is not guaranteed.
 #ifndef DISABLE_MOE_A2A_SYNC_FOR_PROFILING
-#define DISABLE_MOE_A2A_SYNC_FOR_PROFILING 1
+#define DISABLE_MOE_A2A_SYNC_FOR_PROFILING 0
 #endif
 
 namespace tensorrt_llm
 {
 namespace kernels
 {
+
+#define MOE_A2A_PROFILE_TIMING 1
+#if defined(MOE_A2A_PROFILE_TIMING)
+// Fine-grained timing for main phases of the fused MoE all-to-all communicator.
+// Enable by defining MOE_A2A_PROFILE_TIMING at compile time.
+enum MoeA2ATimerId : int
+{
+    MOE_A2A_TIMER_G2S_ALL_FIELDS = 0,
+    MOE_A2A_TIMER_WAIT_G2S_ALL_FIELDS = 1,
+    MOE_A2A_TIMER_PACK_ALL_FIELDS = 2,
+    MOE_A2A_TIMER_QUANTIZE = 3,
+    MOE_A2A_TIMER_PROTO_PACK = 4,
+    MOE_A2A_TIMER_S2G_REG = 5,
+    MOE_A2A_TIMER_G2S_LOOP = 6,
+    MOE_A2A_TIMER_PROTO_UNPACK = 7,
+    MOE_A2A_TIMER_DEQUANTIZE = 8,
+    MOE_A2A_TIMER_UNPACK_ALL_FIELDS = 9,
+    MOE_A2A_TIMER_S2G_ALL_FIELDS = 10,
+    MOE_A2A_TIMER_WAIT_S2G_BULK = 11,
+    MOE_A2A_TIMER_REARM_FIFO = 12,
+    // Sub-phases of the receive-side g2sLoop to better understand where time goes.
+    MOE_A2A_TIMER_G2S_LOOP_START = 13,  // startWorkspaceG2S + book-keeping
+    MOE_A2A_TIMER_G2S_LOOP_WAIT = 14,   // smemBarWait (barrier spin / wait)
+    MOE_A2A_TIMER_G2S_LOOP_CHECK = 15,  // checkDataReceivedInShm (LL128 progress check)
+    MOE_A2A_TIMER_COUNT = 16
+};
+
+__device__ unsigned long long g_moe_a2a_timer_cycles[MOE_A2A_TIMER_COUNT];
+__device__ unsigned long long g_moe_a2a_timer_calls[MOE_A2A_TIMER_COUNT];
+
+// Only profile a small, fixed set of "representative" warps to better approximate critical-path latency.
+// We choose blockIdx.{x,y} == 0, threadIdx.{y,z} == 0, warpId == 0. This will capture
+// one sender warp (blockIdx.z == 0) and one receiver warp (blockIdx.z == 1).
+__device__ __forceinline__ bool moeA2AIsProfiledWarp()
+{
+    int warpId = threadIdx.x / WARP_SIZE;
+    return (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0 && threadIdx.z == 0 && warpId == 0);
+}
+
+#define MOE_A2A_TIMER_START(varName, laneId)                                                  \
+    unsigned long long varName = 0;                                                           \
+    if (moeA2AIsProfiledWarp() && (laneId) == 0)                                              \
+    {                                                                                         \
+        varName = clock64();                                                                  \
+    }                                                                                         \
+    __syncwarp()
+
+#define MOE_A2A_TIMER_STOP(timerId, varName, laneId)                                          \
+    if (moeA2AIsProfiledWarp() && (laneId) == 0)                                              \
+    {                                                                                         \
+        unsigned long long _t_end = clock64();                                                \
+        g_moe_a2a_timer_cycles[timerId] += _t_end - (varName);                                \
+        g_moe_a2a_timer_calls[timerId] += 1ULL;                                               \
+    }                                                                                         \
+    __syncwarp()
+
+#else
+
+#define MOE_A2A_TIMER_START(varName, laneId) do { (void) 0; } while (0)
+#define MOE_A2A_TIMER_STOP(timerId, varName, laneId) do { (void) 0; } while (0)
+
+#endif
 
 // Quantize a contiguous shared-memory buffer containing elements of DType into NVFP4 with per-16-element FP8 scales.
 // Output layout (repeated per 16-element group per lane), followed by one global scale float:
@@ -632,34 +697,46 @@ public:
         return totalValidCount;
     }
 
-    static __device__ __forceinline__ void protoPack(uint8_t* sharedMemoryBase, uint64_t step, int countIn128Bytes,
-        int fifoEntry128ByteIndexBase, int warpId, int laneId)
+    static __device__ __forceinline__ void protoPack(
+        uint8_t* sharedMemoryBase, // Shared memory base pointer
+        uint64_t step, // 5
+        int countIn128Bytes, // Length of the FIFO entry in 128-byte blocks
+        int fifoEntry128ByteIndexBase, // Index of the FIFO entry in 128-byte blocks - 1000
+        int warpId, // 0-7
+        int laneId // 0-31
+    )
     {
         uint64_t* aligned128BytesShm = reinterpret_cast<uint64_t*>(sharedMemoryBase);
-        int halfLaneId = laneId % 16;
-        int halfIndex = laneId / 16;
-        int tailOffsetIn128Bytes = countIn128Bytes + halfIndex;
+        int halfLaneId = laneId % 16; // 0-15
+        int halfIndex = laneId / 16; // 0-1
+        int tailOffsetIn128Bytes = countIn128Bytes + halfIndex; // 112
         // for LL128 15 * 128 Bytes will be packed to 16 * 128 Bytes, each 16 threads is used for one 15 * 128 bytes.
-        for (int idxIn128BytesBase = halfIndex * 15; idxIn128BytesBase < countIn128Bytes; idxIn128BytesBase += 30)
+        // for each 15 * 128 Byte payload we pack 15 tail 8 byte values slotted into one 128 byte slot.
+        for (int idxIn128BytesBase = halfIndex * 15; idxIn128BytesBase < countIn128Bytes; idxIn128BytesBase += 30) // 30
         {
-            int tailFlagIndexFromFifoEntry = fifoEntry128ByteIndexBase + tailOffsetIn128Bytes;
-            int tailFlagInnerIndex = tailFlagIndexFromFifoEntry % MoeCommFieldInfo::UINT64_PER_128B_BLOCK;
-            int idxIn128Bytes = idxIn128BytesBase + halfLaneId;
-            int idxFromFifoEntry = fifoEntry128ByteIndexBase + idxIn128Bytes;
-            uint64_t tailValue = step;
-            uint64_t tailInnerIndex = (halfLaneId >= tailFlagInnerIndex) ? halfLaneId + 1 : halfLaneId;
+            int tailFlagIndexFromFifoEntry = fifoEntry128ByteIndexBase + tailOffsetIn128Bytes; // 1112
+            // UINT64_PER_128B_BLOCK = 16
+            int tailFlagInnerIndex = tailFlagIndexFromFifoEntry % MoeCommFieldInfo::UINT64_PER_128B_BLOCK; // 1112 % 16 = 8
+            int idxIn128Bytes = idxIn128BytesBase + halfLaneId; // 30 + 8 = 38
+            int idxFromFifoEntry = fifoEntry128ByteIndexBase + idxIn128Bytes; // 1000 + 38 = 1038
+            uint64_t tailValue = step; // 5
+            // The step value lives at the fifoIndex % 16 index - so save space for that index.
+            uint64_t tailInnerIndex = (halfLaneId >= tailFlagInnerIndex) ? halfLaneId + 1 : halfLaneId; // 9
             if (halfLaneId == 15)
             {
                 tailInnerIndex = tailFlagInnerIndex;
             }
-            int targetTailIndex = tailOffsetIn128Bytes * MoeCommFieldInfo::UINT64_PER_128B_BLOCK + tailInnerIndex;
+            int targetTailIndex = tailOffsetIn128Bytes * MoeCommFieldInfo::UINT64_PER_128B_BLOCK + tailInnerIndex;  // E.g., 1904
             if (idxIn128Bytes < countIn128Bytes && halfLaneId < 15)
             {
                 int flagIndex = idxIn128Bytes * MoeCommFieldInfo::UINT64_PER_128B_BLOCK
-                    + idxFromFifoEntry % MoeCommFieldInfo::UINT64_PER_128B_BLOCK;
+                    + idxFromFifoEntry % MoeCommFieldInfo::UINT64_PER_128B_BLOCK; 
+                // Read the user payload from the current block
                 tailValue = aligned128BytesShm[flagIndex];
+                // Place the step value inside the current block
                 aligned128BytesShm[flagIndex] = step;
             }
+            // Move the value to the tail.
             aligned128BytesShm[targetTailIndex] = tailValue;
             tailOffsetIn128Bytes += 2;
         }
@@ -1137,8 +1214,10 @@ public:
         for (; sendIndex < tokenCount; sendIndex += mPairInfo.runChannelCount)
         {
             int tokenIndex = sendIndexMapping == nullptr ? sendIndex : sendIndexMapping[sendIndex];
+            MOE_A2A_TIMER_START(t_g2s_all, mLaneId);
             tensorrt_llm::kernels::fused_moe_impl::g2sAllFields<HAS_BASIC_FIELD, FIELD_COUNT>(
                 mFieldInfo, mExpertParallelInfo, tokenIndex, mShmemBase, mWarpId, mLaneId, mSmemBar);
+            MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_G2S_ALL_FIELDS, t_g2s_all, mLaneId);
             if (needNewEntry())
             {
                 if (mFifoEntryIndex >= 0)
@@ -1149,12 +1228,18 @@ public:
                 }
                 newSendEntry();
             }
+            MOE_A2A_TIMER_START(t_wait_g2s_all, mLaneId);
             tensorrt_llm::kernels::fused_moe_impl::waitG2SAllFields<HAS_BASIC_FIELD>(mSmemBar, &phaseParity);
+            MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_WAIT_G2S_ALL_FIELDS, t_wait_g2s_all, mLaneId);
+
+            MOE_A2A_TIMER_START(t_pack_all, mLaneId);
             tensorrt_llm::kernels::fused_moe_impl::packAllFields<FIELD_COUNT>(
                 mFieldInfo, tokenIndex, mShmemBase, mLaneId);
+            MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_PACK_ALL_FIELDS, t_pack_all, mLaneId);
 
             if constexpr (LOW_PRECISION)
             {
+                MOE_A2A_TIMER_START(t_quantize, mLaneId);
                 // quantize here.
                 int alignedUnitBit = mFieldInfo.fieldsInfo[0].alignedUnitBit;
                 int alignedUnitCount = mFieldInfo.fieldsInfo[0].alignedUnitCount;
@@ -1170,13 +1255,18 @@ public:
                 case CUDA_R_16F: quantize_nvfp4_sharedmem<half>(sharedMemoryCompact, sizeInBytes, mLaneId); break;
                 default: break;
                 }
+                MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_QUANTIZE, t_quantize, mLaneId);
             }
 
+            MOE_A2A_TIMER_START(t_proto_pack, mLaneId);
             FusedMoeProto::protoPack(
                 mShmemBase, mHead, mSingleCompactData128ByteCount, mFifoEntry128ByteIndexBase, mWarpId, mLaneId);
+            MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_PROTO_PACK, t_proto_pack, mLaneId);
 
+            MOE_A2A_TIMER_START(t_s2g_reg, mLaneId);
             tensorrt_llm::kernels::fused_moe_impl::startWorkspaceS2GReg(getFifoEntryPtr(), mShmemBase,
                 mSingleTransfer128ByteCount, mFifoEntry128ByteIndexBase, mWarpId, mLaneId);
+            MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_S2G_REG, t_s2g_reg, mLaneId);
 
             // tensorrt_llm::kernels::fused_moe_impl::waitS2GBulkRead();
 
@@ -1227,6 +1317,11 @@ public:
 #else
             while (loaded128ByteCount < mSingleTransfer128ByteCount)
             {
+                // Aggregate timer for the whole g2sLoop iteration.
+                MOE_A2A_TIMER_START(t_g2s_loop, mLaneId);
+
+                // Sub-slice 1: launch async copy from global->shared (and related bookkeeping).
+                MOE_A2A_TIMER_START(t_g2s_loop_start, mLaneId);
                 tensorrt_llm::kernels::fused_moe_impl::startWorkspaceG2S(mShmemBase, getFifoEntryPtr(),
                     mSingleTransfer128ByteCount, mFifoEntry128ByteIndexBase, loaded128ByteCount, mSmemBar, mWarpId,
                     mLaneId);
@@ -1235,17 +1330,31 @@ public:
                     updateReadEntry();
                     needRelease = false;
                 }
+                MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_G2S_LOOP_START, t_g2s_loop_start, mLaneId);
+
+                // Sub-slice 2: wait on the shared-memory barrier (spin/wait).
+                MOE_A2A_TIMER_START(t_g2s_loop_wait, mLaneId);
                 tensorrt_llm::kernels::fused_moe_impl::smemBarWait(mSmemBar, &phaseParity);
+                MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_G2S_LOOP_WAIT, t_g2s_loop_wait, mLaneId);
+
+                // Sub-slice 3: LL128 protocol progress check in shared memory.
+                MOE_A2A_TIMER_START(t_g2s_loop_check, mLaneId);
                 loaded128ByteCount += FusedMoeProto::template checkDataReceivedInShm<false>(mShmemBase, mTail,
                     mSingleTransfer128ByteCount, mFifoEntry128ByteIndexBase, loaded128ByteCount, mWarpId, mLaneId);
+                MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_G2S_LOOP_CHECK, t_g2s_loop_check, mLaneId);
+
+                MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_G2S_LOOP, t_g2s_loop, mLaneId);
             }
 #endif
 
+            MOE_A2A_TIMER_START(t_proto_unpack, mLaneId);
             FusedMoeProto::protoUnpack(mShmemBase, mTail, mSingleCompactData128ByteCount, mFifoEntry128ByteIndexBase,
                 loaded128ByteCount, mWarpId, mLaneId);
+            MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_PROTO_UNPACK, t_proto_unpack, mLaneId);
 
             if constexpr (LOW_PRECISION)
             {
+                MOE_A2A_TIMER_START(t_dequantize, mLaneId);
                 int alignedUnitBit = mFieldInfo.fieldsInfo[0].alignedUnitBit;
                 int alignedUnitCount = mFieldInfo.fieldsInfo[0].alignedUnitCount;
                 int sizeInBytes = alignedUnitCount * (1 << alignedUnitBit);
@@ -1260,15 +1369,26 @@ public:
                 case CUDA_R_16F: dequantize_nvfp4_sharedmem<half>(sharedMemoryCompact, sizeInBytes, mLaneId); break;
                 default: break;
                 }
+                MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_DEQUANTIZE, t_dequantize, mLaneId);
             }
 
+            MOE_A2A_TIMER_START(t_unpack_all, mLaneId);
             tensorrt_llm::kernels::fused_moe_impl::unpackAllFields<FIELD_COUNT>(
                 mFieldInfo, tokenIndex, mShmemBase, mLaneId);
+            MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_UNPACK_ALL_FIELDS, t_unpack_all, mLaneId);
+
+            MOE_A2A_TIMER_START(t_s2g_all, mLaneId);
             tensorrt_llm::kernels::fused_moe_impl::s2gAllFields<HAS_BASIC_FIELD, FIELD_COUNT>(
                 mFieldInfo, mExpertParallelInfo, tokenIndex, mShmemBase, mWarpId, mLaneId);
-            tensorrt_llm::kernels::fused_moe_impl::waitS2GBulkRead();
+            MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_S2G_ALL_FIELDS, t_s2g_all, mLaneId);
 
+            MOE_A2A_TIMER_START(t_wait_s2g_bulk, mLaneId);
+            tensorrt_llm::kernels::fused_moe_impl::waitS2GBulkRead();
+            MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_WAIT_S2G_BULK, t_wait_s2g_bulk, mLaneId);
+
+            MOE_A2A_TIMER_START(t_rearm_fifo, mLaneId);
             rearmFifoBuffer();
+            MOE_A2A_TIMER_STOP(MOE_A2A_TIMER_REARM_FIFO, t_rearm_fifo, mLaneId);
             nextToken();
         }
         if (mFifoEntry128ByteIndexBase > 0)
@@ -1475,6 +1595,7 @@ void moeAllToAll(FusedMoeCommKernelParam params, FusedMoeWorkspace workspace, cu
     int warpRecvShmSize = params.recvCommMeta.getSingleShmSize(); // 15360
     int warpShmSize = warpSendShmSize;
     int epSize = params.worldInfo.epInfo.epSize; // 16
+    int epRank = params.worldInfo.epInfo.epRank;
     // TLLM_CHECK_WITH_INFO(warpSendShmSize == warpRecvShmSize, "warpSendShmSize(%d) not same as warpRecvShmSize(%d)",
         // warpSendShmSize, warpRecvShmSize);
     int maxGroupCountPerCta = std::min(params.worldInfo.epInfo.epSize, FusedMoeCommunicator::MAX_GROUP_COUNT_PER_BLOCK); // 8
@@ -1537,6 +1658,104 @@ void moeAllToAll(FusedMoeCommKernelParam params, FusedMoeWorkspace workspace, cu
     printf("block: %d, %d, grid: %d, %d, %d\n", block.x, block.y, grid.x, grid.y, grid.z);
     kernelFn<<<grid, block, totalDynamicShmSize, stream>>>(params, workspace, hasBasicFields);
     TLLM_CUDA_CHECK(cudaGetLastError());
+
+#if defined(MOE_A2A_PROFILE_TIMING)
+    // Ensure completion of the MoE A2A kernel on the same stream before reading timing buffers.
+    TLLM_CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    // Fetch and print timing breakdown for main communicator phases.
+    unsigned long long h_cycles[MOE_A2A_TIMER_COUNT] = {};
+    unsigned long long h_calls[MOE_A2A_TIMER_COUNT] = {};
+
+    TLLM_CUDA_CHECK(cudaMemcpyFromSymbol(h_cycles, g_moe_a2a_timer_cycles, sizeof(h_cycles)));
+    TLLM_CUDA_CHECK(cudaMemcpyFromSymbol(h_calls, g_moe_a2a_timer_calls, sizeof(h_calls)));
+
+    static char const* kTimerNames[MOE_A2A_TIMER_COUNT] = {
+        "g2sAllFields",                   // 0
+        "waitG2SAllFields",               // 1
+        "packAllFields",                  // 2
+        "quantize",                       // 3
+        "protoPack",                      // 4
+        "startWorkspaceS2GReg",           // 5
+        "g2sLoop(startG2S+wait+check)",   // 6 (aggregate)
+        "protoUnpack",                    // 7
+        "dequantize",                     // 8
+        "unpackAllFields",                // 9
+        "s2gAllFields",                   // 10
+        "waitS2GBulkRead",                // 11
+        "rearmFifoBuffer",                // 12
+        "g2sLoop_startWorkspaceG2S",      // 13
+        "g2sLoop_smemBarWait",            // 14
+        "g2sLoop_checkDataReceived",      // 15
+    };
+
+    // Sum total cycles across all timers to compute percentages.
+    unsigned long long total_cycles = 0;
+    unsigned long long total_send_cycles = 0;
+    unsigned long long total_recv_cycles = 0;
+    for (int i = 0; i < MOE_A2A_TIMER_COUNT; ++i)
+    {
+        total_cycles += h_cycles[i];
+        if (i <= MOE_A2A_TIMER_S2G_REG)
+        {
+            // Timers 0..5 are used on the send path.
+            total_send_cycles += h_cycles[i];
+        }
+        else
+        {
+            // Timers 6..12 are used on the receive path.
+            total_recv_cycles += h_cycles[i];
+        }
+    }
+
+    // Combined view (backwards compatible with existing logs).
+    printf("[moeAllToAll] ---- MoE A2A phase timing (cycles) ----\n");
+    for (int i = 0; i < MOE_A2A_TIMER_COUNT; ++i)
+    {
+        double avg = h_calls[i] > 0 ? static_cast<double>(h_cycles[i]) / static_cast<double>(h_calls[i]) : 0.0;
+        double pct = total_cycles > 0
+            ? (static_cast<double>(h_cycles[i]) * 100.0 / static_cast<double>(total_cycles))
+            : 0.0;
+        printf("[moeAllToAll]   %-24s total=%llu calls=%llu avg=%.1f pct=%.1f%%\n",
+            kTimerNames[i],
+            static_cast<unsigned long long>(h_cycles[i]),
+            static_cast<unsigned long long>(h_calls[i]),
+            avg,
+            pct);
+    }
+
+    // Explicit send‑path breakdown (timers 0..5).
+    printf("[moeAllToAll] ---- MoE A2A SEND path timing (cycles) ----\n");
+    for (int i = 0; i <= MOE_A2A_TIMER_S2G_REG; ++i)
+    {
+        double avg = h_calls[i] > 0 ? static_cast<double>(h_cycles[i]) / static_cast<double>(h_calls[i]) : 0.0;
+        double pct = total_send_cycles > 0
+            ? (static_cast<double>(h_cycles[i]) * 100.0 / static_cast<double>(total_send_cycles))
+            : 0.0;
+        printf("[moeAllToAll]   %-24s total=%llu calls=%llu avg=%.1f pct=%.1f%%\n",
+            kTimerNames[i],
+            static_cast<unsigned long long>(h_cycles[i]),
+            static_cast<unsigned long long>(h_calls[i]),
+            avg,
+            pct);
+    }
+
+    // Explicit receive‑path breakdown (timers 6..12).
+    printf("[moeAllToAll] ---- MoE A2A RECV path timing (cycles) ----\n");
+    for (int i = MOE_A2A_TIMER_G2S_LOOP; i < MOE_A2A_TIMER_COUNT; ++i)
+    {
+        double avg = h_calls[i] > 0 ? static_cast<double>(h_cycles[i]) / static_cast<double>(h_calls[i]) : 0.0;
+        double pct = total_recv_cycles > 0
+            ? (static_cast<double>(h_cycles[i]) * 100.0 / static_cast<double>(total_recv_cycles))
+            : 0.0;
+        printf("[moeAllToAll]   %-24s total=%llu calls=%llu avg=%.1f pct=%.1f%%\n",
+            kTimerNames[i],
+            static_cast<unsigned long long>(h_cycles[i]),
+            static_cast<unsigned long long>(h_calls[i]),
+            avg,
+            pct);
+    }
+#endif
 }
 
 int FusedMoeCommunicator::maxSmCount = -1;

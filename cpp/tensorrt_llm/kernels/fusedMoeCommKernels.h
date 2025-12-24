@@ -328,7 +328,7 @@ public:
         int ctaLimitedChannelCount = targetCtaCount / 2 / ctaPerChannel; // 19
         ctaLimitedChannelCount = std::max(1, ctaLimitedChannelCount); // 19
         int channelCount = std::min(ctaLimitedChannelCount, maxChannelCount); // 19
-        return dim3(ctaPerChannel, 38, 2);
+        return dim3(ctaPerChannel, channelCount, 2);
     }
 };
 
