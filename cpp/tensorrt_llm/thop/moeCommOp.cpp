@@ -43,6 +43,7 @@ c10::List<torch::Tensor> moeCommOp(c10::List<torch::Tensor> inputs, torch::Tenso
     torch::Tensor allWorkspaces, int64_t outputAllocationCount, int64_t epRank, int64_t epSize,
     std::optional<c10::List<bool>> needZeroOutput = std::nullopt, c10::optional<bool> useLowPrecision = std::nullopt)
 {
+    // printf("moeCommOp - executed 3nd time\n");
     CHECK_INPUT(sendRankCumSum, torch::kInt32);
     CHECK_INPUT(sendIndiceTensor, torch::kInt32);
     CHECK_INPUT(recvRankCumSum, torch::kInt32);

@@ -1147,6 +1147,7 @@ void FusedMoeWorkspace::initializeLocalWorkspace(FusedMoeWorldInfo const& worldI
 
 void moeAllToAll(FusedMoeCommKernelParam params, FusedMoeWorkspace workspace, cudaStream_t stream)
 {
+    // printf("moeAllToAll - executed 3rd time\n");
     bool hasBasicFields = params.sendFieldInfo.tokenSelectedSlots != nullptr;
     int warpSendShmSize = params.sendCommMeta.getSingleShmSize();
     int warpRecvShmSize = params.recvCommMeta.getSingleShmSize();

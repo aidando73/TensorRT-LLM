@@ -51,8 +51,12 @@ if(NOT DEEP_EP_CUDA_ARCHITECTURES)
 endif()
 
 # Ensure that dependent libraries are installed
-find_library(MLX5_lib NAMES mlx5 REQUIRED)
-
+find_library(MLX5_lib NAMES mlx5)
+if(NOT MLX5_lib)
+  message(WARNING "mlx5 library not found. Skipping deep_ep build.")
+  set(DEEP_EP_CUDA_ARCHITECTURES "")
+  return()
+endif()
 # Prepare files
 # =============
 
